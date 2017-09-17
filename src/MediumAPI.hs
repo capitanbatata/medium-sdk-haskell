@@ -18,13 +18,16 @@ import           Data.Monoid
 import           Data.Proxy
 import           Data.String
 import           Data.Text                  (Text)
+import qualified Data.Text                  as T
 import           Data.Text.Encoding         (encodeUtf8)
 import           Data.Time.Clock
 import           Data.Time.Clock.POSIX
 import           GHC.Generics
 
 import           Network.HTTP.Client        hiding (Proxy)
+import           Network.HTTP.Client.TLS    (tlsManagerSettings)
 
+import           Control.Exception          (throwIO)
 import           Servant
 import           Servant.Client
 import           Web.FormUrlEncoded
@@ -47,6 +50,9 @@ newtype Token = Token { token :: Text } deriving (Show, Read, Eq)
 
 instance ToHttpApiData Token where
     toUrlPiece Token{..} = "Bearer " <> token
+
+instance IsString Token where
+  fromString = Token . T.pack
 
 data ContentFormat = Html | Markdown
                    deriving (Show, Read, Eq, Generic)
@@ -297,4 +303,14 @@ me :<|> posts :<|> publications :<|> tokenFromAuthCode = client api
 
 api :: Proxy API
 api = Proxy
+
+-- * Client usage: TODO: put this in a client of medium (that uses this SDK). (You could also write tests as well.)
+runQuery :: ClientM a -> IO a
+runQuery q = do
+  manager <- newManager tlsManagerSettings
+  res <- runClientM q (ClientEnv manager baseUrl)
+  case res of
+    Left err  -> throwIO err
+    Right val -> return val
+
 

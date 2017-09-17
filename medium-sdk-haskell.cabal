@@ -26,7 +26,8 @@ library
                      , servant-server
                      , text
                      , time
+                     , http-client-tls 
 
 source-repository head
   type:     git
-  location: https://github.com/timmytofu/medium-sdk-haskell
+  location: https://github.com/capitanbatata/medium-sdk-haskell
