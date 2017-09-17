@@ -1,51 +1,52 @@
-{-# LANGUAGE DataKinds                                                     #-}
-{-# LANGUAGE StandaloneDeriving                                            #-}
-{-# LANGUAGE DeriveGeneric                                                 #-}
-{-# LANGUAGE OverloadedStrings                                             #-}
-{-# LANGUAGE RecordWildCards                                               #-}
-{-# LANGUAGE TypeFamilies                                                  #-}
-{-# LANGUAGE TypeOperators                                                 #-}
+{-# LANGUAGE DataKinds          #-}
+{-# LANGUAGE DeriveGeneric      #-}
+{-# LANGUAGE OverloadedLists    #-}
+{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE RecordWildCards    #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies       #-}
+{-# LANGUAGE TypeOperators      #-}
 
 module MediumAPI where
 
 import           Control.Applicative
 import           Control.Monad.Trans.Either
 import           Data.Aeson
-import           Data.ByteString                           (intercalate)
+import           Data.ByteString            (intercalate)
 import           Data.Default.Class
 import           Data.Monoid
 import           Data.Proxy
 import           Data.String
-import           Data.Text                                 (Text)
-import           Data.Text.Encoding                        (encodeUtf8)
+import           Data.Text                  (Text)
+import           Data.Text.Encoding         (encodeUtf8)
 import           Data.Time.Clock
 import           Data.Time.Clock.POSIX
 import           GHC.Generics
 
-import           Network.HTTP.Client                       hiding (Proxy)
+import           Network.HTTP.Client        hiding (Proxy)
 
 import           Servant
 import           Servant.Client
+import           Web.FormUrlEncoded
 
-
-data TokenRequest = TokenRequest { authCode      :: Text
-                                 , clientId      :: Text
-                                 , clientSecret  :: Text
-                                 , redirectUri   :: Text
+data TokenRequest = TokenRequest { authCode     :: Text
+                                 , clientId     :: Text
+                                 , clientSecret :: Text
+                                 , redirectUri  :: Text
                                  }
 
-instance ToFormUrlEncoded TokenRequest where
-    toFormUrlEncoded TokenRequest{..} = [ ("code", authCode)
-                                        , ("client_id", clientId)
-                                        , ("client_secret", clientSecret)
-                                        , ("grant_type", "authorization_code")
-                                        , ("redirect_uri", redirectUri)
-                                        ]
+instance ToForm TokenRequest where
+    toForm TokenRequest{..} = [ ("code", authCode)
+                              , ("client_id", clientId)
+                              , ("client_secret", clientSecret)
+                              , ("grant_type", "authorization_code")
+                              , ("redirect_uri", redirectUri)
+                              ]
 
 newtype Token = Token { token :: Text } deriving (Show, Read, Eq)
 
-instance ToText Token where
-    toText Token{..} = "Bearer " <> token
+instance ToHttpApiData Token where
+    toUrlPiece Token{..} = "Bearer " <> token
 
 data ContentFormat = Html | Markdown
                    deriving (Show, Read, Eq, Generic)
@@ -120,11 +121,11 @@ instance FromJSON User where
            <*> o' .: "imageUrl"
     parseJSON _          = error "Expected an object"
 
-data Publication = Publication { publicationId               :: Text
-                               , publicationName             :: Text
-                               , publicationDescription      :: Text
-                               , publicationUrl              :: Text
-                               , publicationImgUrl           :: Text
+data Publication = Publication { publicationId          :: Text
+                               , publicationName        :: Text
+                               , publicationDescription :: Text
+                               , publicationUrl         :: Text
+                               , publicationImgUrl      :: Text
                                } deriving (Show, Read, Eq)
 
 instance FromJSON Publication where
@@ -200,11 +201,11 @@ instance ToJSON Scope where
     toJSON = scopeString
 
 instance FromJSON Scope where
-    parseJSON "basicProfile"      = return BasicProfile
-    parseJSON "listPublications"  = return ListPublications
-    parseJSON "publishPost"       = return PublishPost
-    parseJSON "uploadImage"       = return UploadImage
-    parseJSON _                   = error "Invalid scope value"
+    parseJSON "basicProfile"     = return BasicProfile
+    parseJSON "listPublications" = return ListPublications
+    parseJSON "publishPost"      = return PublishPost
+    parseJSON "uploadImage"      = return UploadImage
+    parseJSON _                  = error "Invalid scope value"
 
 data TokenResp = TokenResp { tokenType    :: Text
                            , accessToken  :: Text
@@ -228,12 +229,12 @@ data RefreshRequest = RefreshRequest { refreshToken' :: Text
                                      }
                                      deriving (Show, Read, Eq)
 
-instance ToFormUrlEncoded RefreshRequest where
-    toFormUrlEncoded RefreshRequest{..} = [ ("refresh_token", refreshToken')
-                                          , ("client_id",     clientId')
-                                          , ("client_secret", clientSecret')
-                                          , ("grant_type",    "refresh_token")
-                                          ]
+instance ToForm RefreshRequest where
+    toForm RefreshRequest{..} = [ ("refresh_token", refreshToken')
+                                , ("client_id",     clientId')
+                                , ("client_secret", clientSecret')
+                                , ("grant_type",    "refresh_token")
+                                ]
 
 
 milliToUtc :: POSIXTime -> UTCTime
@@ -243,40 +244,56 @@ defaultPost :: NewPost
 defaultPost = NewPost "" Html "" [] Nothing Public AllRightsReserved
 
 baseUrl :: BaseUrl
-baseUrl = BaseUrl Https "api.medium.com" 443
+baseUrl = BaseUrl
+  { baseUrlScheme = Https
+  , baseUrlHost = "api.medium.com"
+  , baseUrlPort = 443
+  , baseUrlPath = "/v1"
+  }
 
--- TODO: scope list should be non-empty
-authCodeUrl :: Text -> [Scope] -> Text -> Text -> String
-authCodeUrl clientId requestedScope stateText redirectUrl =
-    show . getUri $
-      setQueryString [ ("client_id",    Just $ encodeUtf8 clientId)
-                     , ("state",        Just $ encodeUtf8 stateText)
-                     , ("redirect_uri", Just $ encodeUtf8 redirectUrl)
-                     , ("scope",        Just scopeList)
-                     , ("responseType", Just "code")
-                     ]
-                     def { host = "medium.com"
-                         , port = 443
-                         , secure = True
-                         , path = "/m/oauth/authorize"
-                         }
-  where scopeList = intercalate "," $ map scopeString requestedScope
+me ::  Maybe Token -> ClientM User
+publications :: Text -> Maybe Token -> ClientM PubList
+posts :: Text -> Maybe Token -> NewPost -> ClientM CreatedPost
+tokenFromAuthCode :: TokenRequest -> ClientM TokenResp
+-- refreshAuthToken :: Maybe Token -> RefreshRequest -> ClientM TokenResp
 
-type EitherIO x = EitherT x IO
+-- * Magic strings (path parts).
+type UsersP = "users"
+type TokensP = "tokens"
 
-me ::  Maybe Token -> EitherIO ServantError User
-publications :: Text -> Maybe Token -> EitherIO ServantError PubList
-posts :: Text -> Maybe Token -> NewPost -> EitherIO ServantError CreatedPost
-tokenFromAuthCode :: TokenRequest -> EitherIO ServantError TokenResp
-refreshAuthToken :: Maybe Token -> RefreshRequest -> EitherIO ServantError TokenResp
+-- * Medium end-points.
+type MeEP = "me" :> Header "Authorization" Token :> Get '[JSON] User
 
-type API = "v1" :> "me" :> Header "Authorization" Token :> Get '[JSON] User
-         :<|> "v1" :> "users" :> Capture "authorId" Text :> "posts" :> Header "Authorization" Token :> ReqBody '[JSON] NewPost :> Post '[JSON] CreatedPost
-         :<|> "v1" :> "users" :> Capture "userId" Text :> "publications" :> Header "Authorization" Token :> Get '[JSON] PubList
-         :<|> "v1" :> "tokens" :> ReqBody '[FormUrlEncoded] TokenRequest :> Post '[JSON] TokenResp
-         :<|> "v1" :> "tokens" :> Header "Authorization" Token :> ReqBody '[FormUrlEncoded] RefreshRequest :> Post '[JSON] TokenResp
+type NewPostEP
+  = UsersP
+  :> Capture "authorId" Text
+  :> Header "Authorization" Token
+  :> ReqBody '[JSON] NewPost
+  :> "posts"
+  :> Post '[JSON] CreatedPost
 
-me :<|> posts :<|> publications :<|> tokenFromAuthCode :<|> refreshAuthToken = client api baseUrl
+type PublicationsEP
+  =  UsersP
+  :> Capture "userId" Text
+  :> Header "Authorization" Token
+  :> "publications"
+  :> Get '[JSON] PubList
+
+type TokensEP
+  =  TokensP
+  :> ReqBody '[FormUrlEncoded] TokenRequest
+  :> Post '[JSON] TokenResp
+
+-- * Medium API.
+type API
+  = MeEP
+  :<|> NewPostEP
+  :<|> PublicationsEP
+  :<|> TokensEP
+-- TODO: what to do with this one?  :<|> Tokens :> Header "Authorization" Token :> ReqBody '[FormUrlEncoded] RefreshRequest :> Post '[JSON] TokenResp
+
+--me :<|> posts :<|> publications :<|> tokenFromAuthCode :<|> refreshAuthToken = client api
+me :<|> posts :<|> publications :<|> tokenFromAuthCode = client api
 
 api :: Proxy API
 api = Proxy
